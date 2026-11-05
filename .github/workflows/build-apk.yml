@@ -29,7 +29,7 @@ jobs:
 
           edit('frontend/src/layout.rs',
                "const BOTTOM: [f32; 2] = [320.0, 240.0];\n",
-               "const BOTTOM: [f32; 2] = [320.0, 240.0];\n\n/// how big the small screen of BigOverlay is, as a part of the size the big\n/// one is drawn at.\nconst OVERLAY: f32 = 0.4;\n")
+               "const BOTTOM: [f32; 2] = [320.0, 240.0];\n\n/// how big the small screen of BigOverlay is, as a part of the size the big\n/// one is drawn at.\nconst OVERLAY: f32 = 0.4;\n\n/// how far the small screen of BigOverlay hangs out over the big one's right\n/// edge, as a part of its own width.\nconst OVERLAY_SHIFT: f32 = 0.25;\n")
 
           edit('frontend/src/layout.rs',
                "        // the first screen big, the second half its size beside it, level\n",
@@ -39,7 +39,9 @@ jobs:
                       let scale = fit(first[0], first[1]);
                       let ([a, b], [c, d]) = (size(first, scale), size(second, scale * OVERLAY));
                       let (left, top, margin) = ((width - a) / 2, (height - b) / 2, (height / 40).max(2));
-                      [Some([left, top, a, b]), Some([left + a - c - margin, top + b - d - margin, c, d])]
+                      // moved out over the big screen's right edge, as far as the panel goes
+                      let x = (left + a - c - margin + (c as f32 * OVERLAY_SHIFT) as i32).min(width - c - margin);
+                      [Some([left, top, a, b]), Some([x, top + b - d - margin, c, d])]
                   }
                   // the first screen big, the second half its size beside it, level
           """)
@@ -56,11 +58,11 @@ jobs:
                   for (index, item) in shown.into_iter().enumerate() {
                       let Some((image, area)) = item else { continue };""",
                """        let mut parts = Vec::new();
-                  // a screen laid out inside the other one's area (the small one of the
-                  // overlay layout) is drawn last, over it: the bottom one already is,
-                  // the top one, when swapped, needs the order turned round
-                  let inside = |a: [i32; 4], b: [i32; 4]| a[0] >= b[0] && a[1] >= b[1] && a[0] + a[2] <= b[0] + b[2] && a[1] + a[3] <= b[1] + b[3];
-                  let top_inset = matches!(&shown, [Some((_, top)), Some((_, bottom))] if inside(*top, *bottom));
+                  // a small screen laid out over a bigger one (the overlay layout) is
+                  // drawn last: the bottom one already is, the top one, when swapped,
+                  // needs the order turned round
+                  let overlap = |a: [i32; 4], b: [i32; 4]| a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+                  let top_inset = matches!(&shown, [Some((_, top)), Some((_, bottom))] if overlap(*top, *bottom) && top[2] * top[3] < bottom[2] * bottom[3]);
                   let mut order: Vec<(usize, Option<(crate::PanelImage, [i32; 4])>)> = shown.into_iter().enumerate().collect();
                   if top_inset {
                       order.reverse();
@@ -70,6 +72,12 @@ jobs:
           PY
 
       - uses: Swatinem/rust-cache@v2
+
+      # the same signing key every time, so a new build installs over the last one
+      - uses: actions/cache@v4
+        with:
+          path: ~/pn-test.keystore
+          key: pn-test-keystore-v1
 
       - name: Build the app
         run: |
@@ -100,7 +108,7 @@ jobs:
           python3 tools/third_party.py "$work/assets/THIRD_PARTY_LICENSES.txt" pocket-native-android aarch64-linux-android >/dev/null
           cp LICENSE CREDITS.md assets/fonts/OFL.txt "$work/assets/"
           KEYSTORE_PASS=android bash scripts/android/make_apk.sh io.github.pocketnative.test "Pocket Native (test)" \
-            "$work/libpocketnative.so" "$work/assets" out/pocket-native-test.apk "$work/test.keystore"
+            "$work/libpocketnative.so" "$work/assets" out/pocket-native-test.apk "$HOME/pn-test.keystore"
           ls -l out
 
       - uses: actions/upload-artifact@v4
