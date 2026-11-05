@@ -1,0 +1,118 @@
+# Builds a test APK of Pocket Native with the overlay layout added
+# ("Top big, bottom over" and "Bottom big, top over" in Display > Layout).
+# Run it from the Actions tab: Build APK > Run workflow.
+name: Build APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Add the overlay layout
+        run: |
+          python3 - <<'PY'
+          def edit(path, old, new):
+              s = open(path).read()
+              assert s.count(old) == 1, (path, old[:50], s.count(old))
+              open(path, 'w').write(s.replace(old, new))
+
+          edit('frontend/src/settings.rs',
+               "    BigBeside,\n}",
+               "    BigBeside,\n    /// the first screen big, the second small over its lower right corner.\n    BigOverlay,\n}")
+
+          edit('frontend/src/layout.rs',
+               "const BOTTOM: [f32; 2] = [320.0, 240.0];\n",
+               "const BOTTOM: [f32; 2] = [320.0, 240.0];\n\n/// how big the small screen of BigOverlay is, as a part of the size the big\n/// one is drawn at.\nconst OVERLAY: f32 = 0.4;\n")
+
+          edit('frontend/src/layout.rs',
+               "        // the first screen big, the second half its size beside it, level\n",
+               """        // the first screen as big as it fits, the second over its lower right
+                  // corner at OVERLAY times that size, a margin in from the edges
+                  Layout::BigOverlay => {
+                      let scale = fit(first[0], first[1]);
+                      let ([a, b], [c, d]) = (size(first, scale), size(second, scale * OVERLAY));
+                      let (left, top, margin) = ((width - a) / 2, (height - b) / 2, (height / 40).max(2));
+                      [Some([left, top, a, b]), Some([left + a - c - margin, top + b - d - margin, c, d])]
+                  }
+                  // the first screen big, the second half its size beside it, level
+          """)
+
+          edit('frontend/src/menu.rs',
+               "const LAYOUTS: [(Layout, bool, &str); 7] = [",
+               "const LAYOUTS: [(Layout, bool, &str); 9] = [")
+          edit('frontend/src/menu.rs',
+               '    (Layout::Original, false, "Original size"),\n];',
+               '    (Layout::Original, false, "Original size"),\n    (Layout::BigOverlay, false, "Top big, bottom over"),\n    (Layout::BigOverlay, true, "Bottom big, top over"),\n];')
+
+          edit('engine/gpu/src/raster/gles.rs',
+               """        let mut parts = Vec::new();
+                  for (index, item) in shown.into_iter().enumerate() {
+                      let Some((image, area)) = item else { continue };""",
+               """        let mut parts = Vec::new();
+                  // a screen laid out inside the other one's area (the small one of the
+                  // overlay layout) is drawn last, over it: the bottom one already is,
+                  // the top one, when swapped, needs the order turned round
+                  let inside = |a: [i32; 4], b: [i32; 4]| a[0] >= b[0] && a[1] >= b[1] && a[0] + a[2] <= b[0] + b[2] && a[1] + a[3] <= b[1] + b[3];
+                  let top_inset = matches!(&shown, [Some((_, top)), Some((_, bottom))] if inside(*top, *bottom));
+                  let mut order: Vec<(usize, Option<(crate::PanelImage, [i32; 4])>)> = shown.into_iter().enumerate().collect();
+                  if top_inset {
+                      order.reverse();
+                  }
+                  for (index, item) in order {
+                      let Some((image, area)) = item else { continue };""")
+          PY
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the app
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-linux-android
+          pip install pycryptodomex
+          NDK_BIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android30-clang"
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android30-clang"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BT=$(ls "$SDK/build-tools" | grep -v -E 'rc|alpha|beta' | sort -V | tail -1)
+          export BUILD_TOOLS_BIN="$SDK/build-tools/$BT"
+          for d in $(ls "$SDK/platforms" | sort -V); do
+            [ -f "$SDK/platforms/$d/android.jar" ] && export ANDROID_JAR="$SDK/platforms/$d/android.jar"
+          done
+          echo "build-tools $BT, $ANDROID_JAR"
+          cargo build --release --locked --target aarch64-linux-android -p pocket-native-android
+          work="$RUNNER_TEMP/work"
+          mkdir -p "$work" out
+          "$NDK_BIN/llvm-strip" -o "$work/libpocketnative.so" target/aarch64-linux-android/release/libpocketnative.so
+          rm -rf "$work/assets"
+          mkdir -p "$work/assets/titles"
+          for profile in titles/*/profile.toml; do
+            mkdir -p "$work/assets/$(dirname "$profile")"
+            cp "$profile" "$work/assets/$profile"
+          done
+          python3 tools/third_party.py "$work/assets/THIRD_PARTY_LICENSES.txt" pocket-native-android aarch64-linux-android >/dev/null
+          cp LICENSE CREDITS.md assets/fonts/OFL.txt "$work/assets/"
+          KEYSTORE_PASS=android bash scripts/android/make_apk.sh io.github.pocketnative.test "Pocket Native (test)" \
+            "$work/libpocketnative.so" "$work/assets" out/pocket-native-test.apk "$work/test.keystore"
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocket-native-test-apk
+          path: out/pocket-native-test.apk
+
+      - name: Publish a release for a direct download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "overlay-${GITHUB_RUN_NUMBER}" out/pocket-native-test.apk \
+            --title "Pocket Native test, overlay layout" \
+            --notes "Test build with the overlay layout. Installs beside the real app." \
+            --prerelease
