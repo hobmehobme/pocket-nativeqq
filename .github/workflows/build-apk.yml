@@ -5,6 +5,14 @@ name: Build APK
 
 on:
   workflow_dispatch:
+    inputs:
+      app:
+        description: "test = installs beside the real app. original = the real app's package name, which needs the real app uninstalled first"
+        type: choice
+        default: test
+        options:
+          - test
+          - original
 
 permissions:
   contents: write
@@ -173,20 +181,25 @@ jobs:
           done
           python3 tools/third_party.py "$work/assets/THIRD_PARTY_LICENSES.txt" pocket-native-android aarch64-linux-android >/dev/null
           cp LICENSE CREDITS.md assets/fonts/OFL.txt "$work/assets/"
-          KEYSTORE_PASS=android bash scripts/android/make_apk.sh io.github.pocketnative.test "Pocket Native (test)" \
-            "$work/libpocketnative.so" "$work/assets" out/pocket-native-test.apk "$HOME/pn-test.keystore"
+          if [ "${{ inputs.app }}" = original ]; then
+            PKG=io.github.pocketnative; LABEL="Pocket Native"; APK=pocket-native-original-package.apk
+          else
+            PKG=io.github.pocketnative.test; LABEL="Pocket Native (test)"; APK=pocket-native-test.apk
+          fi
+          KEYSTORE_PASS=android bash scripts/android/make_apk.sh "$PKG" "$LABEL" \
+            "$work/libpocketnative.so" "$work/assets" "out/$APK" "$HOME/pn-test.keystore"
           ls -l out
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pocket-native-test-apk
-          path: out/pocket-native-test.apk
+          name: pocket-native-apk
+          path: out/*.apk
 
       - name: Publish a release for a direct download
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "overlay-${GITHUB_RUN_NUMBER}" out/pocket-native-test.apk \
-            --title "Pocket Native test, overlay layout" \
-            --notes "Test build with the overlay layout. Installs beside the real app." \
+          gh release create "overlay-${GITHUB_RUN_NUMBER}" out/*.apk \
+            --title "Pocket Native, overlay layout and Fill (${{ inputs.app }})" \
+            --notes "Build with the overlay layout and the Fill aspect. Package: ${{ inputs.app }}." \
             --prerelease
