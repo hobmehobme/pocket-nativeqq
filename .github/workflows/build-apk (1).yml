@@ -1,0 +1,210 @@
+# Builds a test APK of Pocket Native with the overlay layout added
+# ("Top big, bottom over" and "Bottom big, top over" in Display > Layout).
+# Run it from the Actions tab: Build APK > Run workflow.
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "test = installs beside the real app. original = the real app's package name, which needs the real app uninstalled first"
+        type: choice
+        default: test
+        options:
+          - test
+          - original
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Add the overlay layout
+        run: |
+          python3 - <<'PY'
+          def edit(path, old, new):
+              s = open(path).read()
+              assert s.count(old) == 1, (path, old[:50], s.count(old))
+              open(path, 'w').write(s.replace(old, new))
+
+          edit('frontend/src/settings.rs',
+               "    BigBeside,\n}",
+               "    BigBeside,\n    /// the first screen big, the second small over its lower right corner.\n    BigOverlay,\n}")
+
+          edit('frontend/src/layout.rs',
+               "const BOTTOM: [f32; 2] = [320.0, 240.0];\n",
+               "const BOTTOM: [f32; 2] = [320.0, 240.0];\n\n/// how big the small screen of BigOverlay is, as a part of the size the big\n/// one is drawn at.\nconst OVERLAY: f32 = 0.4;\n\n/// how far the small screen of BigOverlay hangs out over the big one's right\n/// edge, as a part of its own width.\nconst OVERLAY_SHIFT: f32 = 0.25;\n")
+
+          edit('frontend/src/layout.rs',
+               "        // the first screen big, the second half its size beside it, level\n",
+               """        // the first screen as big as it fits, the second over its lower right
+                  // corner at OVERLAY times that size, a margin in from the edges
+                  Layout::BigOverlay => {
+                      let scale = fit(first[0], first[1]);
+                      let ([a, b], [c, d]) = (size(first, scale), size(second, scale * OVERLAY));
+                      let (left, top, margin) = ((width - a) / 2, (height - b) / 2, (height / 40).max(2));
+                      // moved out over the big screen's right edge, as far as the panel goes
+                      let x = (left + a - c - margin + (c as f32 * OVERLAY_SHIFT) as i32).min(width - c - margin);
+                      [Some([left, top, a, b]), Some([x, top + b - d - margin, c, d])]
+                  }
+                  // the first screen big, the second half its size beside it, level
+          """)
+
+          edit('frontend/src/menu.rs',
+               "const LAYOUTS: [(Layout, bool, &str); 7] = [",
+               "const LAYOUTS: [(Layout, bool, &str); 9] = [")
+          edit('frontend/src/menu.rs',
+               '    (Layout::Original, false, "Original size"),\n];',
+               '    (Layout::Original, false, "Original size"),\n    (Layout::BigOverlay, false, "Top big, bottom over"),\n    (Layout::BigOverlay, true, "Bottom big, top over"),\n];')
+
+          edit('engine/gpu/src/raster/gles.rs',
+               """        let mut parts = Vec::new();
+                  for (index, item) in shown.into_iter().enumerate() {
+                      let Some((image, area)) = item else { continue };""",
+               """        let mut parts = Vec::new();
+                  // how opaque the bottom screen is when laid out over the top one
+                  const OVERLAY_OPACITY: f32 = 0.7;
+                  // a small screen laid out over a bigger one (the overlay layout) is
+                  // drawn last: the bottom one already is, the top one, when swapped,
+                  // needs the order turned round
+                  let overlap = |a: [i32; 4], b: [i32; 4]| a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+                  let top_inset = matches!(&shown, [Some((_, top)), Some((_, bottom))] if overlap(*top, *bottom) && top[2] * top[3] < bottom[2] * bottom[3]);
+                  let bottom_over = matches!(&shown, [Some((_, top)), Some((_, bottom))] if overlap(*top, *bottom) && bottom[2] * bottom[3] < top[2] * top[3]);
+                  let mut order: Vec<(usize, Option<(crate::PanelImage, [i32; 4])>)> = shown.into_iter().enumerate().collect();
+                  if top_inset {
+                      order.reverse();
+                  }
+                  for (index, item) in order {
+                      let Some((image, area)) = item else { continue };""")
+          edit('engine/gpu/src/raster/gles/sources.rs',
+               'uniform int smooth_scale;',
+               'uniform int smooth_scale;\nuniform float opacity;')
+          edit('engine/gpu/src/raster/gles/sources.rs',
+               'color = vec4(sum / float(n.x * n.y), 1.0);',
+               'color = vec4(sum / float(n.x * n.y), opacity);')
+          edit('engine/gpu/src/raster/gles/sources.rs',
+               'color = vec4(texture(source, texel / vec2(textureSize(source, 0))).rgb, 1.0);',
+               'color = vec4(texture(source, texel / vec2(textureSize(source, 0))).rgb, opacity);')
+          edit('engine/gpu/src/raster/gles/sources.rs',
+               'color = vec4(texelFetch(source, at, 0).rgb, 1.0);',
+               'color = vec4(texelFetch(source, at, 0).rgb, opacity);')
+          edit('engine/gpu/src/raster/gles/display.rs',
+               'smooth: bool, top: bool, picture: Option<u64> },',
+               'smooth: bool, top: bool, picture: Option<u64>, opacity: f32 },')
+          edit('engine/gpu/src/raster/gles/display.rs',
+               '            for part in parts {\n                let (texture, screen, upright, area, smooth, clip) = match part {',
+               '            for part in parts {\n                let mut opacity_now = 1.0_f32;\n                let (texture, screen, upright, area, smooth, clip) = match part {')
+          edit('engine/gpu/src/raster/gles/display.rs',
+               'Part::Surface { texture, screen, area, smooth, top, picture } => {\n',
+               'Part::Surface { texture, screen, area, smooth, top, picture, opacity } => {\n                        opacity_now = opacity;\n')
+          edit('engine/gpu/src/raster/gles/display.rs',
+               '                gl.uniform_1_i32(gl.get_uniform_location(program, "smooth_scale").as_ref(), smooth as i32);\n',
+               '                gl.uniform_1_i32(gl.get_uniform_location(program, "smooth_scale").as_ref(), smooth as i32);\n                gl.uniform_1_f32(gl.get_uniform_location(program, "opacity").as_ref(), opacity_now);\n')
+          edit('engine/gpu/src/raster/gles/display.rs',
+               '                gl.draw_arrays(glow::TRIANGLES, 0, 3);\n                gl.disable(glow::SCISSOR_TEST);\n            }\n    Ok(())',
+               '                if opacity_now < 1.0 {\n                    gl.enable(glow::BLEND);\n                    gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);\n                }\n                gl.draw_arrays(glow::TRIANGLES, 0, 3);\n                if opacity_now < 1.0 {\n                    gl.disable(glow::BLEND);\n                }\n                gl.disable(glow::SCISSOR_TEST);\n            }\n    Ok(())')
+          edit('engine/gpu/src/raster/gles.rs',
+               'picture: (interpolate && top).then_some(s.version) });',
+               'picture: (interpolate && top).then_some(s.version), opacity: if index == 1 && bottom_over { OVERLAY_OPACITY } else { 1.0 } });')
+          edit('frontend/src/settings.rs',
+               '    Stretch,\n    Crop,\n}',
+               '    Stretch,\n    Crop,\n    /// the top screen the shape of the panel, its top and bottom cut a little to stretch it less.\n    Fill,\n}')
+          edit('frontend/src/settings.rs',
+               'pub const ALL: [Aspect; 7] = [Aspect::Original, Aspect::Integer, Aspect::FourThree, Aspect::SixteenTen, Aspect::SixteenNine, Aspect::Stretch, Aspect::Crop];',
+               'pub const ALL: [Aspect; 8] = [Aspect::Original, Aspect::Integer, Aspect::FourThree, Aspect::SixteenTen, Aspect::SixteenNine, Aspect::Stretch, Aspect::Crop, Aspect::Fill];')
+          edit('frontend/src/settings.rs',
+               'Aspect::Original | Aspect::Integer | Aspect::Stretch => 5.0 / 3.0,',
+               'Aspect::Original | Aspect::Integer | Aspect::Stretch | Aspect::Fill => 5.0 / 3.0,')
+          edit('frontend/src/settings.rs',
+               '        if self == Aspect::Crop { 0.1 } else { 0.0 }\n    }\n',
+               "        if self == Aspect::Crop { 0.1 } else { 0.0 }\n    }\n\n    /// how much of the top screen's height is left out at each end: for Fill, a\n    /// twentieth and then some, so the width over the panel is stretched less.\n    pub fn crop_vertical(self) -> f32 {\n        if self == Aspect::Fill { 0.06 } else { 0.0 }\n    }\n")
+          edit('frontend/src/menu.rs',
+               '                Aspect::Crop => "Crop",\n',
+               '                Aspect::Crop => "Crop",\n                Aspect::Fill => "Fill",\n')
+          edit('frontend/src/layout.rs',
+               '    let top = [TOP[1] * aspect.ratio(), TOP[1]];\n    let (first, second) = if swapped',
+               "    // Fill: the top screen the panel's shape, a little of its height cut off to stretch it less\n    let ratio = if aspect == Aspect::Fill { width as f32 / height as f32 } else { aspect.ratio() };\n    let top = [TOP[1] * ratio, TOP[1]];\n    let (first, second) = if swapped")
+          edit('frontend/src/layout.rs',
+               '    zakuro_gpu::set_top_crop(if zakuro_gpu::second_window() && !zakuro_gpu::stacked() { 0.0 } else { settings.aspect.crop() });\n',
+               '    zakuro_gpu::set_top_crop(if zakuro_gpu::second_window() && !zakuro_gpu::stacked() { 0.0 } else { settings.aspect.crop() });\n    zakuro_gpu::set_top_crop_vertical(if zakuro_gpu::second_window() && !zakuro_gpu::stacked() { 0.0 } else { settings.aspect.crop_vertical() });\n')
+          edit('engine/gpu/src/raster/gles/display.rs',
+               'pub fn set_top_crop(each_side: f32) {\n    TOP_CROP.store(each_side.clamp(0.0, 0.45).to_bits(), std::sync::atomic::Ordering::Relaxed);\n}\n',
+               "pub fn set_top_crop(each_side: f32) {\n    TOP_CROP.store(each_side.clamp(0.0, 0.45).to_bits(), std::sync::atomic::Ordering::Relaxed);\n}\n\n/// how much of the top screen's height is cut off each end, f32 bits, 0\n/// for none.\npub(super) static TOP_CROP_VERTICAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);\n\n/// cuts that much of the top screen's height off each end, the area it is\n/// shown in the part that is left.\npub fn set_top_crop_vertical(each_end: f32) {\n    TOP_CROP_VERTICAL.store(each_end.clamp(0.0, 0.45).to_bits(), std::sync::atomic::Ordering::Relaxed);\n}\n")
+          edit('engine/gpu/src/raster/gles/display.rs',
+               '    let each_side = f32::from_bits(TOP_CROP.load(std::sync::atomic::Ordering::Relaxed));\n    if !top || each_side <= 0.0 {\n        return (area, None);\n    }\n    let width = (area[2] as f32 / (1.0 - 2.0 * each_side)).round() as i32;\n    ([area[0] - (width - area[2]) / 2, area[1], width, area[3]], Some([area[0], height - area[1] - area[3], area[2], area[3]]))\n',
+               '    let each_side = f32::from_bits(TOP_CROP.load(std::sync::atomic::Ordering::Relaxed));\n    let each_end = f32::from_bits(TOP_CROP_VERTICAL.load(std::sync::atomic::Ordering::Relaxed));\n    if !top || (each_side <= 0.0 && each_end <= 0.0) {\n        return (area, None);\n    }\n    let width = (area[2] as f32 / (1.0 - 2.0 * each_side)).round() as i32;\n    let tall = (area[3] as f32 / (1.0 - 2.0 * each_end)).round() as i32;\n    ([area[0] - (width - area[2]) / 2, area[1] - (tall - area[3]) / 2, width, tall], Some([area[0], height - area[1] - area[3], area[2], area[3]]))\n')
+          edit('engine/gpu/src/raster/gles.rs',
+               'set_stacked, set_top_crop, set_window, stacked};',
+               'set_stacked, set_top_crop, set_top_crop_vertical, set_window, stacked};')
+          edit('engine/gpu/src/lib.rs',
+               'set_stacked, set_top_crop, set_window, stacked};',
+               'set_stacked, set_top_crop, set_top_crop_vertical, set_window, stacked};')
+          edit('frontend/src/menu.rs',
+               'let version = concat!("v", env!("CARGO_PKG_VERSION"));',
+               'let version = "v0.5.1a";')
+          PY
+
+      - uses: Swatinem/rust-cache@v2
+
+      # the same signing key every time, so a new build installs over the last one
+      - uses: actions/cache@v4
+        with:
+          path: ~/pn-test.keystore
+          key: pn-test-keystore-v1
+
+      - name: Build the app
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-linux-android
+          pip install pycryptodomex
+          NDK_BIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android30-clang"
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android30-clang"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BT=$(ls "$SDK/build-tools" | grep -v -E 'rc|alpha|beta' | sort -V | tail -1)
+          export BUILD_TOOLS_BIN="$SDK/build-tools/$BT"
+          for d in $(ls "$SDK/platforms" | sort -V); do
+            [ -f "$SDK/platforms/$d/android.jar" ] && export ANDROID_JAR="$SDK/platforms/$d/android.jar"
+          done
+          echo "build-tools $BT, $ANDROID_JAR"
+          cargo build --release --locked --target aarch64-linux-android -p pocket-native-android
+          work="$RUNNER_TEMP/work"
+          mkdir -p "$work" out
+          "$NDK_BIN/llvm-strip" -o "$work/libpocketnative.so" target/aarch64-linux-android/release/libpocketnative.so
+          rm -rf "$work/assets"
+          mkdir -p "$work/assets/titles"
+          for profile in titles/*/profile.toml; do
+            mkdir -p "$work/assets/$(dirname "$profile")"
+            cp "$profile" "$work/assets/$profile"
+          done
+          python3 tools/third_party.py "$work/assets/THIRD_PARTY_LICENSES.txt" pocket-native-android aarch64-linux-android >/dev/null
+          cp LICENSE CREDITS.md assets/fonts/OFL.txt "$work/assets/"
+          # version 0.5.1a, version code 5001 (the real 0.5.0 is 5000)
+          sed -i '/^code=/a version="${VERSION_NAME:-$version}"\ncode="${VERSION_CODE:-$code}"' scripts/android/make_apk.sh
+          if [ "${{ inputs.app }}" = original ]; then
+            PKG=io.github.pocketnative; LABEL="Pocket Native"; APK=pocket-native-0.5.1a-original-package.apk
+          else
+            PKG=io.github.pocketnative.test; LABEL="Pocket Native (test)"; APK=pocket-native-0.5.1a-test.apk
+          fi
+          VERSION_NAME=0.5.1a VERSION_CODE=5001 KEYSTORE_PASS=android bash scripts/android/make_apk.sh "$PKG" "$LABEL" \
+            "$work/libpocketnative.so" "$work/assets" "out/$APK" "$HOME/pn-test.keystore"
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocket-native-apk
+          path: out/*.apk
+
+      - name: Publish a release for a direct download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "overlay-${GITHUB_RUN_NUMBER}" out/*.apk \
+            --title "Pocket Native 0.5.1a, overlay layout and Fill (${{ inputs.app }})" \
+            --notes "Build with the overlay layout and the Fill aspect. Package: ${{ inputs.app }}." \
+            --prerelease
