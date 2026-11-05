@@ -102,6 +102,39 @@ jobs:
           edit('engine/gpu/src/raster/gles.rs',
                'picture: (interpolate && top).then_some(s.version) });',
                'picture: (interpolate && top).then_some(s.version), opacity: if index == 1 && bottom_over { OVERLAY_OPACITY } else { 1.0 } });')
+          edit('frontend/src/settings.rs',
+               '    Stretch,\n    Crop,\n}',
+               '    Stretch,\n    Crop,\n    /// the top screen the shape of the panel, its top and bottom cut a little to stretch it less.\n    Fill,\n}')
+          edit('frontend/src/settings.rs',
+               'pub const ALL: [Aspect; 7] = [Aspect::Original, Aspect::Integer, Aspect::FourThree, Aspect::SixteenTen, Aspect::SixteenNine, Aspect::Stretch, Aspect::Crop];',
+               'pub const ALL: [Aspect; 8] = [Aspect::Original, Aspect::Integer, Aspect::FourThree, Aspect::SixteenTen, Aspect::SixteenNine, Aspect::Stretch, Aspect::Crop, Aspect::Fill];')
+          edit('frontend/src/settings.rs',
+               'Aspect::Original | Aspect::Integer | Aspect::Stretch => 5.0 / 3.0,',
+               'Aspect::Original | Aspect::Integer | Aspect::Stretch | Aspect::Fill => 5.0 / 3.0,')
+          edit('frontend/src/settings.rs',
+               '        if self == Aspect::Crop { 0.1 } else { 0.0 }\n    }\n',
+               "        if self == Aspect::Crop { 0.1 } else { 0.0 }\n    }\n\n    /// how much of the top screen's height is left out at each end: for Fill, a\n    /// twentieth and then some, so the width over the panel is stretched less.\n    pub fn crop_vertical(self) -> f32 {\n        if self == Aspect::Fill { 0.06 } else { 0.0 }\n    }\n")
+          edit('frontend/src/menu.rs',
+               '                Aspect::Crop => "Crop",\n',
+               '                Aspect::Crop => "Crop",\n                Aspect::Fill => "Fill",\n')
+          edit('frontend/src/layout.rs',
+               '    let top = [TOP[1] * aspect.ratio(), TOP[1]];\n    let (first, second) = if swapped',
+               "    // Fill: the top screen the panel's shape, a little of its height cut off to stretch it less\n    let ratio = if aspect == Aspect::Fill { width as f32 / height as f32 } else { aspect.ratio() };\n    let top = [TOP[1] * ratio, TOP[1]];\n    let (first, second) = if swapped")
+          edit('frontend/src/layout.rs',
+               '    zakuro_gpu::set_top_crop(if zakuro_gpu::second_window() && !zakuro_gpu::stacked() { 0.0 } else { settings.aspect.crop() });\n',
+               '    zakuro_gpu::set_top_crop(if zakuro_gpu::second_window() && !zakuro_gpu::stacked() { 0.0 } else { settings.aspect.crop() });\n    zakuro_gpu::set_top_crop_vertical(if zakuro_gpu::second_window() && !zakuro_gpu::stacked() { 0.0 } else { settings.aspect.crop_vertical() });\n')
+          edit('engine/gpu/src/raster/gles/display.rs',
+               'pub fn set_top_crop(each_side: f32) {\n    TOP_CROP.store(each_side.clamp(0.0, 0.45).to_bits(), std::sync::atomic::Ordering::Relaxed);\n}\n',
+               "pub fn set_top_crop(each_side: f32) {\n    TOP_CROP.store(each_side.clamp(0.0, 0.45).to_bits(), std::sync::atomic::Ordering::Relaxed);\n}\n\n/// how much of the top screen's height is cut off each end, f32 bits, 0\n/// for none.\npub(super) static TOP_CROP_VERTICAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);\n\n/// cuts that much of the top screen's height off each end, the area it is\n/// shown in the part that is left.\npub fn set_top_crop_vertical(each_end: f32) {\n    TOP_CROP_VERTICAL.store(each_end.clamp(0.0, 0.45).to_bits(), std::sync::atomic::Ordering::Relaxed);\n}\n")
+          edit('engine/gpu/src/raster/gles/display.rs',
+               '    let each_side = f32::from_bits(TOP_CROP.load(std::sync::atomic::Ordering::Relaxed));\n    if !top || each_side <= 0.0 {\n        return (area, None);\n    }\n    let width = (area[2] as f32 / (1.0 - 2.0 * each_side)).round() as i32;\n    ([area[0] - (width - area[2]) / 2, area[1], width, area[3]], Some([area[0], height - area[1] - area[3], area[2], area[3]]))\n',
+               '    let each_side = f32::from_bits(TOP_CROP.load(std::sync::atomic::Ordering::Relaxed));\n    let each_end = f32::from_bits(TOP_CROP_VERTICAL.load(std::sync::atomic::Ordering::Relaxed));\n    if !top || (each_side <= 0.0 && each_end <= 0.0) {\n        return (area, None);\n    }\n    let width = (area[2] as f32 / (1.0 - 2.0 * each_side)).round() as i32;\n    let tall = (area[3] as f32 / (1.0 - 2.0 * each_end)).round() as i32;\n    ([area[0] - (width - area[2]) / 2, area[1] - (tall - area[3]) / 2, width, tall], Some([area[0], height - area[1] - area[3], area[2], area[3]]))\n')
+          edit('engine/gpu/src/raster/gles.rs',
+               'set_stacked, set_top_crop, set_window, stacked};',
+               'set_stacked, set_top_crop, set_top_crop_vertical, set_window, stacked};')
+          edit('engine/gpu/src/lib.rs',
+               'set_stacked, set_top_crop, set_window, stacked};',
+               'set_stacked, set_top_crop, set_top_crop_vertical, set_window, stacked};')
           PY
 
       - uses: Swatinem/rust-cache@v2
