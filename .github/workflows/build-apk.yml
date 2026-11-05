@@ -143,6 +143,9 @@ jobs:
           edit('engine/gpu/src/lib.rs',
                'set_stacked, set_top_crop, set_window, stacked};',
                'set_stacked, set_top_crop, set_top_crop_vertical, set_window, stacked};')
+          edit('frontend/src/menu.rs',
+               'let version = concat!("v", env!("CARGO_PKG_VERSION"));',
+               'let version = "v0.5.1a";')
           PY
 
       - uses: Swatinem/rust-cache@v2
@@ -181,12 +184,14 @@ jobs:
           done
           python3 tools/third_party.py "$work/assets/THIRD_PARTY_LICENSES.txt" pocket-native-android aarch64-linux-android >/dev/null
           cp LICENSE CREDITS.md assets/fonts/OFL.txt "$work/assets/"
+          # version 0.5.1a, version code 5001 (the real 0.5.0 is 5000)
+          sed -i '/^code=/a version="${VERSION_NAME:-$version}"\ncode="${VERSION_CODE:-$code}"' scripts/android/make_apk.sh
           if [ "${{ inputs.app }}" = original ]; then
-            PKG=io.github.pocketnative; LABEL="Pocket Native"; APK=pocket-native-original-package.apk
+            PKG=io.github.pocketnative; LABEL="Pocket Native"; APK=pocket-native-0.5.1a-original-package.apk
           else
-            PKG=io.github.pocketnative.test; LABEL="Pocket Native (test)"; APK=pocket-native-test.apk
+            PKG=io.github.pocketnative.test; LABEL="Pocket Native (test)"; APK=pocket-native-0.5.1a-test.apk
           fi
-          KEYSTORE_PASS=android bash scripts/android/make_apk.sh "$PKG" "$LABEL" \
+          VERSION_NAME=0.5.1a VERSION_CODE=5001 KEYSTORE_PASS=android bash scripts/android/make_apk.sh "$PKG" "$LABEL" \
             "$work/libpocketnative.so" "$work/assets" "out/$APK" "$HOME/pn-test.keystore"
           ls -l out
 
@@ -200,6 +205,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "overlay-${GITHUB_RUN_NUMBER}" out/*.apk \
-            --title "Pocket Native, overlay layout and Fill (${{ inputs.app }})" \
+            --title "Pocket Native 0.5.1a, overlay layout and Fill (${{ inputs.app }})" \
             --notes "Build with the overlay layout and the Fill aspect. Package: ${{ inputs.app }}." \
             --prerelease
