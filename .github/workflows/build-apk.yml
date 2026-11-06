@@ -184,6 +184,17 @@ jobs:
           done
           python3 tools/third_party.py "$work/assets/THIRD_PARTY_LICENSES.txt" pocket-native-android aarch64-linux-android >/dev/null
           cp LICENSE CREDITS.md assets/fonts/OFL.txt "$work/assets/"
+          # the launcher icon, from logo.png in the repo: an adaptive icon over a plain colour
+          if [ -f logo.png ]; then
+            mkdir -p "$work/res/mipmap-xxxhdpi" "$work/res/mipmap-anydpi" "$work/res/values"
+            cp logo.png "$work/res/mipmap-xxxhdpi/ic_launcher_foreground.png"
+            printf '%s' '<resources><color name="ic_launcher_background">#FFD40000</color></resources>' > "$work/res/values/colors.xml"
+            printf '%s' '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android"><background android:drawable="@color/ic_launcher_background"/><foreground android:drawable="@mipmap/ic_launcher_foreground"/></adaptive-icon>' > "$work/res/mipmap-anydpi/ic_launcher.xml"
+            "$BUILD_TOOLS_BIN/aapt2" compile --dir "$work/res" -o "$work/res.zip"
+            export ICON_RES="$work/res.zip"
+            sed -i 's|android:label="@LABEL@"|android:label="@LABEL@" android:icon="@mipmap/ic_launcher"|' scripts/android/AndroidManifest.xml
+            sed -i 's|"\$BUILD_TOOLS_BIN/aapt2" link |&-R "$ICON_RES" |' scripts/android/make_apk.sh
+          fi
           # version 0.5.1a, version code 5001 (the real 0.5.0 is 5000)
           sed -i '/^code=/a version="${VERSION_NAME:-$version}"\ncode="${VERSION_CODE:-$code}"' scripts/android/make_apk.sh
           if [ "${{ inputs.app }}" = original ]; then
