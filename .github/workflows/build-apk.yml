@@ -168,7 +168,7 @@ jobs:
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           BT=$(ls "$SDK/build-tools" | grep -v -E 'rc|alpha|beta' | sort -V | tail -1)
           export BUILD_TOOLS_BIN="$SDK/build-tools/$BT"
-          for d in $(ls "$SDK/platforms" | sort -V); do
+          for d in $(ls "$SDK/platforms" | grep -v -E 'beta|rc|alpha|preview' | sort -V); do
             [ -f "$SDK/platforms/$d/android.jar" ] && export ANDROID_JAR="$SDK/platforms/$d/android.jar"
           done
           echo "build-tools $BT, $ANDROID_JAR"
@@ -193,7 +193,7 @@ jobs:
             "$BUILD_TOOLS_BIN/aapt2" compile --dir "$work/res" -o "$work/res.zip"
             export ICON_RES="$work/res.zip"
             sed -i 's|android:label="@LABEL@"|android:label="@LABEL@" android:icon="@mipmap/ic_launcher"|' scripts/android/AndroidManifest.xml
-            sed -i 's|"\$BUILD_TOOLS_BIN/aapt2" link |&-R "$ICON_RES" |' scripts/android/make_apk.sh
+            sed -i 's|"\$BUILD_TOOLS_BIN/aapt2" link |&--auto-add-overlay -R "$ICON_RES" |' scripts/android/make_apk.sh
           fi
           # version 0.5.1a, version code 5001 (the real 0.5.0 is 5000)
           sed -i '/^code=/a version="${VERSION_NAME:-$version}"\ncode="${VERSION_CODE:-$code}"' scripts/android/make_apk.sh
